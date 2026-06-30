@@ -1,6 +1,8 @@
 from pathlib import Path
 import re
 
+from tests.js_source_extract import extract_function
+
 ROOT = Path(__file__).resolve().parents[1]
 INDEX = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 PANELS = (ROOT / "static" / "panels.js").read_text(encoding="utf-8")
@@ -9,24 +11,6 @@ I18N = (ROOT / "static" / "i18n.js").read_text(encoding="utf-8")
 COMPACT_INDEX = re.sub(r"\s+", "", INDEX)
 COMPACT_PANELS = re.sub(r"\s+", "", PANELS)
 COMPACT_STYLE = re.sub(r"\s+", "", STYLE)
-
-
-def _extract_function(js: str, name: str) -> str:
-    marker = f"function {name}("
-    start = js.find(marker)
-    assert start >= 0, f"{name} function not found in static/panels.js"
-    brace = js.find("{", start)
-    assert brace >= 0, f"{name} opening brace not found"
-    depth = 1
-    i = brace + 1
-    while i < len(js) and depth > 0:
-        if js[i] == "{":
-            depth += 1
-        elif js[i] == "}":
-            depth -= 1
-        i += 1
-    assert depth == 0, f"{name} function braces unbalanced"
-    return js[start:i]
 
 
 def _locale_blocks_with_body(i18n_text: str):
@@ -546,10 +530,8 @@ def test_kanban_dispatcher_inflight_guard_prevents_double_click_toast_confusion(
 
 def test_kanban_dispatcher_no_longer_blocks_default_board():
     """Pin removal of the previous null-board guard in runKanbanDispatcher()."""
-    run_match = re.search(r"async function runKanbanDispatcher\(\)\{(.*?)\n\}", PANELS, re.DOTALL)
-    assert run_match, "runKanbanDispatcher() not found"
-    run_body = run_match.group(1)
-    assert "if (!_kanbanCurrentBoard)" not in run_body, (
+    run_source = extract_function(PANELS, "runKanbanDispatcher", prefix="async function")
+    assert "if (!_kanbanCurrentBoard)" not in run_source, (
         "runKanbanDispatcher() must not block when _kanbanCurrentBoard is null; "
         "default board should dispatch through a board-less path."
     )
@@ -1136,7 +1118,7 @@ def test_kanban_board_color_is_validated_against_css_injection():
     """
     import json
     import subprocess
-    fn_source = _extract_function(PANELS, "_kanbanSafeColor")
+    fn_source = extract_function(PANELS, "_kanbanSafeColor")
     script = """
 const fnSource = __FN__;
 const ctx = {};

@@ -6,30 +6,14 @@ from pathlib import Path
 
 import pytest
 
+from tests.js_source_extract import extract_function
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PANELS = (ROOT / "static" / "panels.js").read_text(encoding="utf-8")
 NODE = shutil.which("node")
 
 pytestmark = pytest.mark.skipif(NODE is None, reason="node not on PATH")
-
-
-def _extract_async_function(js: str, name: str) -> str:
-    marker = f"async function {name}("
-    start = js.find(marker)
-    assert start >= 0, f"{name} function not found in static/panels.js"
-    brace = js.find("{", start)
-    assert brace >= 0, f"{name} opening brace not found"
-    depth = 1
-    i = brace + 1
-    while i < len(js) and depth > 0:
-        if js[i] == "{":
-            depth += 1
-        elif js[i] == "}":
-            depth -= 1
-        i += 1
-    assert depth == 0, f"{name} function braces unbalanced"
-    return js[start:i]
 
 
 def _run_node(js: str) -> dict:
@@ -52,7 +36,7 @@ def _run_node(js: str) -> dict:
 
 
 def _run_dispatcher_case(function_name: str, current_board, confirm: bool) -> dict:
-    fn_source = _extract_async_function(PANELS, function_name)
+    fn_source = extract_function(PANELS, function_name, prefix="async function")
     source = f"""
 const fnSource = {json.dumps(fn_source)};
 eval(fnSource);
