@@ -641,8 +641,7 @@ def test_transparent_tool_completion_preserves_expand_state():
 
 
 def test_transparent_entrance_animation_is_live_turn_only():
-    """The live turn must suppress entrance animation replay during streaming rebuilds."""
-    assert "#liveAssistantTurn .transparent-event-row{animation:none!important" in STYLE_CSS
+    """Transparent Stream must not keep the removed entrance animation rule."""
     assert "transparent-event-enter" not in STYLE_CSS
 
 
