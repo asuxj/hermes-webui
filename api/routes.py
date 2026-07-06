@@ -8893,6 +8893,7 @@ from api.streaming import (
 )
 from api.gateway_chat import _run_gateway_chat_streaming, webui_gateway_chat_enabled
 from api.run_journal import (
+    _parse_run_journal_event_id,
     find_run_summary,
     read_run_events,
     read_session_run_events,
@@ -15892,21 +15893,6 @@ def _session_snapshot_payload(session, *, active_stream_id: str | None = None) -
     except Exception:
         payload = {"session_id": str(getattr(session, "session_id", "") or "")}
     return {"session": payload}
-
-
-def _parse_run_journal_event_id(raw: str | None) -> tuple[str | None, int | None]:
-    raw = str(raw or "").strip()
-    if not raw:
-        return None, None
-    if ":" in raw:
-        run_id, tail = raw.rsplit(":", 1)
-    else:
-        run_id, tail = None, raw
-    try:
-        seq = max(0, int(tail))
-    except (TypeError, ValueError):
-        return run_id or None, None
-    return run_id or None, seq
 
 
 def _parse_run_journal_after_seq(qs: dict, stream_id: str | None = None) -> int | None:
