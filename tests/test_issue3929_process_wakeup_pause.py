@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import queue
 import sys
@@ -261,6 +262,144 @@ def test_process_wakeup_pause_revalidates_when_credential_state_changes(tmp_path
     saved = Session.load(session.session_id)
     assert saved is not None
     assert saved.process_wakeup_pause == {}
+
+
+def test_process_wakeup_pause_survives_rotation_style_auth_rewrite(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    auth_json = hermes_home / "auth.json"
+    auth_json.write_text(
+        json.dumps(
+            {
+                "credential_pool": {
+                    "other-provider": [
+                        {
+                            "id": "other-token",
+                            "source": "oauth",
+                            "auth_type": "oauth",
+                            "access_token": "old-access",
+                            "refresh_token": "old-refresh",
+                            "expires_at": 1000,
+                            "last_status": "ok",
+                            "request_count": 1,
+                            "updated_at": "old",
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(models, "_get_profile_home", lambda _profile: hermes_home)
+    session = Session(
+        session_id="wakeup_pause_auth_rotation",
+        workspace=str(tmp_path),
+        model="test-model",
+        model_provider="test-provider",
+    )
+    pause = models.record_process_wakeup_provider_unavailable_pause(
+        session,
+        classification="credential_pool_empty",
+        model="test-model",
+        provider="test-provider",
+    )
+    assert pause is not None
+    paused_fingerprint = pause["credential_state_fingerprint"]
+    session.save()
+    models.SESSIONS[session.session_id] = session
+
+    auth_json.write_text(
+        json.dumps(
+            {
+                "credential_pool": {
+                    "other-provider": [
+                        {
+                            "id": "other-token",
+                            "source": "oauth",
+                            "auth_type": "oauth",
+                            "access_token": "new-access",
+                            "refresh_token": "new-refresh",
+                            "expires_at": 2000,
+                            "last_status": "ok",
+                            "request_count": 2,
+                            "updated_at": "new",
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert models.process_wakeup_credential_state_fingerprint(session) == paused_fingerprint
+
+    def _unexpected_start_run(*_args, **_kwargs):
+        raise AssertionError("token rotation must not clear a paused wakeup")
+
+    monkeypatch.setattr(routes, "_resolve_chat_workspace_with_recovery", lambda _s, _w: str(tmp_path))
+    monkeypatch.setattr(routes, "_read_profile_model_config", lambda _s, _p: (None, None, {}))
+    monkeypatch.setattr(
+        routes,
+        "_resolve_compatible_session_model_state",
+        lambda *_args, **_kwargs: ("test-model", "test-provider", False),
+    )
+    monkeypatch.setattr(routes, "_start_run", _unexpected_start_run)
+
+    response = routes.start_session_turn(
+        session.session_id,
+        "[IMPORTANT: Background process completed during token rotation.]",
+        source="process_wakeup",
+    )
+
+    assert response["_status"] == 409
+    assert response["error"] == PROCESS_WAKEUP_PAUSE_ERROR
+    saved = Session.load(session.session_id)
+    assert saved is not None
+    assert saved.process_wakeup_pause["suppressed_count"] == 1
+    assert saved.process_wakeup_pause["credential_state_fingerprint"] == paused_fingerprint
+
+
+def test_process_wakeup_pause_suppresses_at_provider_model_session(tmp_path, monkeypatch):
+    session = Session(
+        session_id="wakeup_pause_at_model",
+        workspace=str(tmp_path),
+        model="@test-provider:test-model",
+        model_provider=None,
+    )
+    pause = models.record_process_wakeup_provider_unavailable_pause(
+        session,
+        classification="credential_pool_empty",
+        model="test-model",
+        provider="test-provider",
+    )
+    assert pause is not None
+    session.save()
+    models.SESSIONS[session.session_id] = session
+
+    def _unexpected_start_run(*_args, **_kwargs):
+        raise AssertionError("@provider:model wakeup must be suppressed on the paused lane")
+
+    monkeypatch.setattr(routes, "_resolve_chat_workspace_with_recovery", lambda _s, _w: str(tmp_path))
+    monkeypatch.setattr(routes, "_read_profile_model_config", lambda _s, _p: (None, None, {}))
+    monkeypatch.setattr(
+        routes,
+        "_resolve_compatible_session_model_state",
+        lambda *_args, **_kwargs: ("@test-provider:test-model", None, False),
+    )
+    monkeypatch.setattr(routes, "_start_run", _unexpected_start_run)
+
+    response = routes.start_session_turn(
+        session.session_id,
+        "[IMPORTANT: Background process completed for @provider:model lane.]",
+        source="process_wakeup",
+    )
+
+    assert response["_status"] == 409
+    assert response["error"] == PROCESS_WAKEUP_PAUSE_ERROR
+    saved = Session.load(session.session_id)
+    assert saved is not None
+    assert saved.process_wakeup_pause["model"] == "test-model"
+    assert saved.process_wakeup_pause["provider"] == "test-provider"
+    assert saved.process_wakeup_pause["suppressed_count"] == 1
 
 
 def test_stale_credential_empty_process_wakeup_still_records_pause(tmp_path):

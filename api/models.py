@@ -1558,6 +1558,30 @@ def _process_wakeup_pause_part(value) -> str:
     return str(value or '').strip().lower()
 
 
+def _process_wakeup_pause_provider_part(value) -> str:
+    provider = _process_wakeup_pause_part(value)
+    if not provider:
+        return ''
+    try:
+        return _process_wakeup_pause_part(_cfg._resolve_provider_alias(provider))
+    except Exception:
+        return provider
+
+
+def _process_wakeup_pause_lane(model=None, provider=None) -> tuple[str, str]:
+    model_part = _process_wakeup_pause_part(model)
+    provider_part = _process_wakeup_pause_provider_part(provider)
+    if model_part.startswith('@') and ':' in model_part:
+        provider_hint, bare_model = model_part[1:].rsplit(':', 1)
+        provider_hint = _process_wakeup_pause_provider_part(provider_hint)
+        bare_model = _process_wakeup_pause_part(bare_model)
+        if provider_hint and not provider_part:
+            provider_part = provider_hint
+        if bare_model:
+            model_part = bare_model
+    return model_part, provider_part
+
+
 def _process_wakeup_pause_int(value, default: int = 0) -> int:
     try:
         parsed = int(value)
@@ -1575,9 +1599,10 @@ def _process_wakeup_pause_float(value, default: float) -> float:
 
 
 def _process_wakeup_pause_key(model=None, provider=None, classification=None) -> dict:
+    model_part, provider_part = _process_wakeup_pause_lane(model, provider)
     return {
-        'model': _process_wakeup_pause_part(model),
-        'provider': _process_wakeup_pause_part(provider),
+        'model': model_part,
+        'provider': provider_part,
         'classification': _process_wakeup_pause_part(classification),
     }
 
@@ -1701,8 +1726,105 @@ def suppress_process_wakeup_for_provider_pause(
     return pause
 
 
+_PROCESS_WAKEUP_AUTH_ROTATION_KEYS = frozenset({
+    'expires_at',
+    'expires_at_ms',
+    'expires_in',
+    'last_status',
+    'last_status_at',
+    'last_error_code',
+    'last_error_reason',
+    'last_error_message',
+    'last_error_reset_at',
+    'request_count',
+    'updated_at',
+})
+_PROCESS_WAKEUP_AUTH_SECRET_PRESENCE_KEYS = frozenset({
+    'access_token',
+    'refresh_token',
+    'id_token',
+    'api_key',
+    'secret',
+    'client_secret',
+    'runtime_api_key',
+    'token',
+})
+
+
+def _process_wakeup_secret_presence(value):
+    if isinstance(value, str):
+        return bool(value.strip())
+    return bool(value)
+
+
+def _process_wakeup_auth_fingerprint_payload(value):
+    if isinstance(value, dict):
+        payload = {}
+        for key, child in value.items():
+            key_text = str(key)
+            key_norm = key_text.strip().lower()
+            if key_norm in _PROCESS_WAKEUP_AUTH_ROTATION_KEYS:
+                continue
+            if key_norm in _PROCESS_WAKEUP_AUTH_SECRET_PRESENCE_KEYS:
+                payload[key_text] = _process_wakeup_secret_presence(child)
+            else:
+                payload[key_text] = _process_wakeup_auth_fingerprint_payload(child)
+        return payload
+    if isinstance(value, list):
+        return [_process_wakeup_auth_fingerprint_payload(item) for item in value]
+    return value
+
+
+def _process_wakeup_auth_store_fingerprint(path: Path) -> dict:
+    p = Path(path).expanduser()
+    payload: dict = {'path': str(p)}
+    try:
+        stat = p.stat()
+    except FileNotFoundError:
+        payload['missing'] = True
+        return payload
+    except OSError as exc:
+        payload['error'] = exc.__class__.__name__
+        return payload
+    if not p.is_file():
+        payload['kind'] = 'other'
+        return payload
+    try:
+        raw = json.loads(p.read_text(encoding='utf-8'))
+    except Exception:
+        payload['kind'] = 'file'
+        payload['semantic'] = 'unparsed-fallback'
+        payload['mtime_ns'] = int(stat.st_mtime_ns)
+        payload['size'] = int(stat.st_size)
+        return payload
+    sanitized = _process_wakeup_auth_fingerprint_payload(raw)
+    try:
+        encoded = json.dumps(
+            sanitized,
+            sort_keys=True,
+            separators=(',', ':'),
+            ensure_ascii=True,
+            default=str,
+        ).encode('utf-8')
+        payload['semantic_sha256'] = hashlib.sha256(encoded).hexdigest()
+    except Exception:
+        payload['kind'] = 'file'
+        payload['semantic'] = 'encode-fallback'
+        payload['mtime_ns'] = int(stat.st_mtime_ns)
+        payload['size'] = int(stat.st_size)
+    return payload
+
+
 def process_wakeup_credential_state_fingerprint(session) -> str:
-    """Return a metadata-only fingerprint for credential/config state."""
+    """Return a metadata-only fingerprint for credential/config state.
+
+    auth.json is rewritten by OAuth/token-refresh and request telemetry churn.
+    Hash its semantic content instead of mtime/size so those rewrites do not
+    clear a credential-exhausted process-wakeup pause. Secret fields are
+    represented only by presence booleans: adding a credential changes the
+    fingerprint, while rotating an existing token value does not persist or
+    compare secret material.
+    """
     try:
         hermes_home = _get_profile_home(getattr(session, 'profile', None))
     except Exception:
@@ -1710,6 +1832,9 @@ def process_wakeup_credential_state_fingerprint(session) -> str:
     files = []
     for name in ('auth.json', 'config.yaml', 'config.yml', '.env'):
         path = hermes_home / name
+        if name == 'auth.json':
+            files.append((name, _process_wakeup_auth_store_fingerprint(path)))
+            continue
         try:
             stat = path.stat()
         except FileNotFoundError:
@@ -1720,7 +1845,7 @@ def process_wakeup_credential_state_fingerprint(session) -> str:
             kind = 'file' if path.is_file() else 'other'
             files.append((name, kind, int(stat.st_mtime_ns), int(stat.st_size)))
     payload = {
-        'version': 1,
+        'version': 2,
         'profile': _process_wakeup_pause_part(getattr(session, 'profile', None)),
         'files': files,
     }
