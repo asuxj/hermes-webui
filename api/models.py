@@ -3133,25 +3133,33 @@ def _cached_session_lags_disk(cached) -> bool:
                 disk_scenes = disk_meta_quick.get('anchor_activity_scenes') or {}
                 if not isinstance(disk_scenes, dict):
                     disk_scenes = {}
-                if not disk_scenes or set(disk_scenes.keys()) != set(cached_scenes.keys()):
-                    # Scene key set differs — disk has been updated with new
-                    # keys the cache hasn't seen.
-                    return True
-                # Same key set: check the latest updated_at timestamp.
-                def _max_updated(records):
-                    latest = 0.0
-                    for record in records.values():
-                        if not isinstance(record, dict):
-                            continue
-                        try:
-                            ua = float(record.get('updated_at') or 0)
-                        except (TypeError, ValueError):
-                            ua = 0.0
-                        if ua > latest:
-                            latest = ua
-                    return latest
-                if _max_updated(disk_scenes) > _max_updated(cached_scenes):
-                    return True
+                if disk_scenes:
+                    # Directional: only reload when disk is strictly ahead
+                    # of cache. Mirror master's subset comparison — cache
+                    # that is ahead of disk must NOT force a reload, or
+                    # un-persisted scene data is silently dropped.
+                    disk_keys = {str(key) for key, value in disk_scenes.items()
+                                 if key and isinstance(value, dict)}
+                    cached_keys = _anchor_scene_record_keys(cached)
+                    if disk_keys and not disk_keys.issubset(cached_keys):
+                        return True
+                    # Same key set (or disk is subset): check the latest
+                    # updated_at timestamp.
+                    def _max_updated(records):
+                        latest = 0.0
+                        for record in records.values():
+                            if not isinstance(record, dict):
+                                continue
+                            try:
+                                ua = float(record.get('updated_at') or 0)
+                            except (TypeError, ValueError):
+                                ua = 0.0
+                            if ua > latest:
+                                latest = ua
+                        return latest
+                    if _max_updated(disk_scenes) > _anchor_scene_records_updated_at(cached):
+                        return True
+                # disk has no scenes, cache does -> cache is ahead; keep it.
         else:
             # Cached session has no scene records. Check if disk has gained
             # the first scene record — without this the fast-path would miss

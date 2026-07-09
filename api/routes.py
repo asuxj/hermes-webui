@@ -6333,6 +6333,13 @@ def _read_profile_config_cached(profile_name: str, cfg_path: str) -> dict | None
     in-place rewrites where inode+mtime+size are identical on coarse
     filesystems — most editors use atomic-rename (new inode), but tools
     like sed -i or file.write() in-place can keep the same inode.
+
+    NOTE: This is a best-effort backstop, not a full integrity check.
+    Edits that change bytes only after the first 128 characters while
+    keeping inode+mtime+size identical are not detected until the TTL
+    expires. This trade-off is acceptable because the TTL is only 60s
+    and the common case (atomic-rename editors) is fully handled by
+    the inode key component.
     """
     try:
         st = os.stat(cfg_path)
