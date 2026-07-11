@@ -130,7 +130,7 @@ def test_send_still_clears_composer_on_the_happy_path():
     # The files snapshot (#5912 gate fix) is taken from S.pendingFiles BEFORE the
     # upload await and feeds the persisted-draft clear which now runs before the await.
     assert (
-        "const _submittedDraftFilesForClear=_submittedFiles.map(f=>(f&&f.name)||'').filter(Boolean);"
+        "const _submittedDraftFilesForClear=[..._submittedFiles];"
         in MESSAGES_JS
     ), "the files snapshot for the persisted-draft clear must be captured pre-await"
     # The persisted-draft clear must run BEFORE the upload await (not after it),

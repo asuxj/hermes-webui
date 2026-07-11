@@ -1573,7 +1573,7 @@ async function send(){
   // snapshot from S.pendingFiles now so files staged AFTER this point belong to
   // the next send only.
   const _submittedFiles=[...(S.pendingFiles||[])];
-  const _submittedDraftFilesForClear=_submittedFiles.map(f=>(f&&f.name)||'').filter(Boolean);
+  const _submittedDraftFilesForClear=[..._submittedFiles];
   S.pendingFiles=[];
   if(typeof renderTray==='function')renderTray();
 
@@ -1586,7 +1586,7 @@ async function send(){
 
   setComposerStatus(_submittedFiles.length?'Uploading…':'');
   let uploaded=[];
-  try{uploaded=await uploadPendingFiles({files:_submittedFiles, sessionId:activeSid});}
+  try{uploaded=await uploadPendingFiles({files:_submittedFiles, sessionId:activeSid, clearPending:false});}
   catch(e){if(!text){setComposerStatus(`Upload error: ${e.message}`);return;}}
   // Clear the uploading status now that upload is done — if we don't clear here
   // it stays visible for the entire duration of the agent stream, since
