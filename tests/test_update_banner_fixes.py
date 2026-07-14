@@ -829,6 +829,129 @@ class TestApplyForceUpdate:
 class TestAgentUpdateRequiresGatewayRestart:
     """Agent updates must prove gateway restart before returning ok=True."""
 
+    def test_agent_gateway_restart_retries_one_transient_failure(self, monkeypatch):
+        import api.updates as upd
+
+        restart_results = iter([
+            {'status': 'failed', 'message': 'Restart failed: bad file descriptor'},
+            {'status': 'completed', 'message': 'Gateway service restarted successfully'},
+        ])
+        restart_calls = []
+        sleeps = []
+
+        def fake_restart():
+            restart_calls.append('called')
+            return next(restart_results)
+
+        monkeypatch.setattr(upd, 'restart_active_profile_gateway', fake_restart)
+        monkeypatch.setattr(upd.time, 'sleep', sleeps.append)
+        monkeypatch.setattr(upd, 'get_active_profile_gateway_running_pid', lambda: 101)
+
+        ok, result = upd._ensure_gateway_restart_for_agent_update()
+
+        assert ok is True
+        assert result['status'] == 'completed'
+        assert result['retry_attempted'] is True
+        assert 'bad file descriptor' in result['initial_failure']
+        assert restart_calls == ['called', 'called']
+        assert sleeps == [upd._AGENT_GATEWAY_RESTART_RETRY_DELAY_S]
+
+    def test_agent_gateway_restart_retry_busy_stays_fail_closed(self, monkeypatch):
+        import api.updates as upd
+
+        restart_results = iter([
+            {'status': 'failed', 'message': 'Restart failed: first'},
+            {'status': 'busy', 'message': 'Restart already in progress'},
+        ])
+        sleeps = []
+        gateway_pid_calls = []
+
+        monkeypatch.setattr(upd, 'restart_active_profile_gateway', lambda: next(restart_results))
+        monkeypatch.setattr(upd.time, 'sleep', sleeps.append)
+        monkeypatch.setattr(
+            upd,
+            'get_active_profile_gateway_running_pid',
+            lambda: gateway_pid_calls.append(101) or 101,
+        )
+
+        ok, result = upd._ensure_gateway_restart_for_agent_update()
+
+        assert ok is False
+        assert result['status'] == 'busy'
+        assert result['retry_attempted'] is True
+        assert 'first' in result['initial_failure']
+        assert sleeps == [upd._AGENT_GATEWAY_RESTART_RETRY_DELAY_S]
+        assert gateway_pid_calls == [101]
+
+    def test_agent_gateway_restart_accepts_verified_process_replacement_after_retry_failure(self, monkeypatch):
+        import api.updates as upd
+
+        timeline = []
+        restart_results = iter([
+            {'status': 'failed', 'message': 'Restart failed: first'},
+            {'status': 'failed', 'message': 'Restart failed: retry'},
+        ])
+        sleeps = []
+        gateway_pids = iter([101, 202])
+
+        def fake_restart():
+            timeline.append('restart')
+            return next(restart_results)
+
+        def fake_gateway_pid():
+            pid = next(gateway_pids)
+            timeline.append(f'pid:{pid}')
+            return pid
+
+        monkeypatch.setattr(upd, 'restart_active_profile_gateway', fake_restart)
+        monkeypatch.setattr(upd.time, 'sleep', sleeps.append)
+        monkeypatch.setattr(upd, 'get_active_profile_gateway_running_pid', fake_gateway_pid)
+
+        ok, result = upd._ensure_gateway_restart_for_agent_update()
+
+        assert ok is True
+        assert result['status'] == 'completed'
+        assert result['retry_attempted'] is True
+        assert result['process_replaced'] is True
+        assert 'first' in result['initial_failure']
+        assert 'retry' in result['retry_failure']
+        assert timeline == ['pid:101', 'restart', 'restart', 'pid:202']
+        assert sleeps == [
+            upd._AGENT_GATEWAY_RESTART_RETRY_DELAY_S,
+            upd._AGENT_GATEWAY_RESTART_RETRY_DELAY_S,
+        ]
+
+    def test_agent_gateway_restart_fails_closed_after_retry_and_health_check(self, monkeypatch):
+        import api.updates as upd
+
+        restart_results = iter([
+            {'status': 'failed', 'message': 'Restart failed: first'},
+            {'status': 'failed', 'message': 'Restart failed: retry'},
+        ])
+        restart_calls = []
+        sleeps = []
+
+        def fake_restart():
+            restart_calls.append('called')
+            return next(restart_results)
+
+        monkeypatch.setattr(upd, 'restart_active_profile_gateway', fake_restart)
+        monkeypatch.setattr(upd.time, 'sleep', sleeps.append)
+        monkeypatch.setattr(upd, 'get_active_profile_gateway_running_pid', lambda: 101)
+
+        ok, result = upd._ensure_gateway_restart_for_agent_update()
+
+        assert ok is False
+        assert result['status'] == 'failed'
+        assert result['retry_attempted'] is True
+        assert 'Restart failed: first' in result['message']
+        assert 'Restart failed: retry' in result['message']
+        assert restart_calls == ['called', 'called']
+        assert sleeps == [
+            upd._AGENT_GATEWAY_RESTART_RETRY_DELAY_S,
+            upd._AGENT_GATEWAY_RESTART_RETRY_DELAY_S,
+        ]
+
     def test_apply_update_agent_requires_gateway_restart(self, tmp_path, monkeypatch):
         import api.updates as upd
 
